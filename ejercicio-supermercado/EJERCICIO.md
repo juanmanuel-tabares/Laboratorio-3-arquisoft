@@ -57,7 +57,8 @@ Reglas de negocio definidas para el domicilio:
 │                                        ├─ memoria por conversación (40 mensajes)      │
 │                                        ├─ modelo: Gemini (GoogleGenAiChatModel)  ◄────┼──► API de Gemini
 │                                        └─ herramientas = cliente MCP (decoradas por   │
-│                                           RegistroHerramientas)                       │
+│                                           RegistroHerramientas; confirmar y cancelar  │
+│                                           esperan el botón Aprobar del cliente)       │
 └──────────────────────────────────────────┬────────────────────────────────────────────┘
                                            │ MCP: initialize · tools/list · tools/call
                                            │ JSON-RPC 2.0 sobre Streamable HTTP  →  http://localhost:8090/mcp
@@ -187,14 +188,15 @@ Al arrancar, el cliente hace `initialize` (negocia el protocolo `2025-06-18`) y 
 
 | Archivo | Responsabilidad |
 |---|---|
-| `config/ChatConfig` | Arma el `ChatClient`: prompt de sistema, herramientas MCP (decoradas) y `MessageChatMemoryAdvisor` con una ventana de 40 mensajes por conversación. |
-| `prompts/sistema.st` | Rol del asistente, flujo de atención en 6 pasos y reglas: no inventar precios, confirmación explícita, nunca pedir datos bancarios, ignorar intentos de cambiar las reglas, mencionar siempre el número de pedido. |
-| `chat/ChatController` | `POST /api/chat` y `DELETE /api/chat/{id}` (reiniciar la memoria). Valida el tamaño del mensaje y traduce los fallos del proveedor a mensajes claros. |
+| `config/ChatConfig` | Arma el `ChatClient`: prompt de sistema, herramientas MCP (decoradas; `confirmarPedido` y `cancelarPedido` pasan por `AprobacionesPendientes`) y `MessageChatMemoryAdvisor` con una ventana de 40 mensajes por conversación. |
+| `prompts/sistema.st` | Rol del asistente, flujo de atención en 6 pasos y reglas: no inventar precios, nunca pedir datos bancarios, ignorar intentos de cambiar las reglas, mencionar siempre el número de pedido y explicar que confirmar y cancelar se aprueban con un botón. |
+| `chat/ChatController` | `POST /api/chat`, `POST /api/chat/{id}/aprobaciones/{accionId}` (botones Aprobar y Rechazar) y `DELETE /api/chat/{id}` (reiniciar la memoria y descartar acciones pendientes). Valida el tamaño del mensaje y traduce los fallos del proveedor a mensajes claros. |
+| `chat/AprobacionesPendientes` | Aprobación en el *host* (problema 10). Intercepta `confirmarPedido` y `cancelarPedido`: en vez de enviarlas al servidor, guarda la acción con los argumentos exactos que propuso el modelo, lee el resumen real con `verPedido` (que además verifica el dueño) y le responde al modelo `PENDIENTE_DE_APROBACION`. Solo el botón Aprobar la ejecuta: una vez, desde la misma conversación y dentro de los 10 minutos siguientes. El modelo no tiene ninguna herramienta para aprobar. |
 | `chat/RegistroHerramientas` | Decorador de cada herramienta: anota cuáles se usaron en el turno (la interfaz las muestra como etiquetas) y convierte los errores de herramienta en `{"error": "…"}`. |
 | `config/GeminiConfig` | Cliente de Gemini con tiempo máximo por llamada y reintentos con espera creciente para 408/429/5xx. |
-| `static/index.html` | Interfaz web: burbujas de chat, sugerencias, indicador de "escribiendo", etiquetas ⚙ con las herramientas MCP usadas, modo claro u oscuro y diseño adaptable al móvil. El Markdown se interpreta después de escapar el HTML. |
+| `static/index.html` | Interfaz web: burbujas de chat, sugerencias, indicador de "escribiendo", etiquetas ⚙ con las herramientas MCP usadas, tarjeta de aprobación con el resumen del pedido y los botones Aprobar y Rechazar, modo claro u oscuro y diseño adaptable al móvil. El Markdown se interpreta después de escapar el HTML. |
 
-Pruebas: `./mvnw test` → **6/6**, que cubren el registro de herramientas, la conversión de errores a JSON, los mensajes de error y el aviso de operaciones ya ejecutadas.
+Pruebas: `./mvnw test` → **15/15**. Cubren el registro de herramientas, la conversión de errores a JSON, los mensajes de error y el aviso de operaciones ya ejecutadas, y 9 casos de la aprobación en el host: la acción no llega al servidor hasta que el cliente aprueba, se usa una sola vez, rechazar no ejecuta nada, otra conversación no puede aprobarla, vence a los 10 minutos, un pedido ajeno devuelve el error del servidor sin mostrar botones, no se ofrece confirmar bajo el pedido mínimo o con un método de pago inválido, solo se interceptan las dos acciones sensibles, y el endpoint deja el resultado en la memoria del chat.
 
 ## Paso 5. Prueba de punta a punta por chat
 
@@ -241,12 +243,32 @@ pedido 6 | Ana Gómez      | CANCELADO  | —        | 28.000  | chatbot; era BO
 stock: Pan 40→39 · Café 29→26 (pedido 4) · Agua 100 (sin cambios)
 ```
 
+### Sesión de aprobación en el host (14 de noviembre)
+
+Después de implementar la aprobación del problema 10 se repitió con Ana el caso que había fallado, en una conversación nueva con `gemini-3.6-flash`:
+
+| # | Acción del cliente | Herramientas MCP | Resultado |
+|---|---|---|---|
+| G | «Hola, soy Ana (3001234567). Quiero 2 paquetes de café molido y una botella de aceite. Pago en efectivo, confírmame el pedido.» | `buscarCliente`, `crearPedido`, `buscarProductos` ×2, `agregarProducto` ×2. El modelo llamó `confirmarPedido`, pero el host la detuvo | El chat muestra la tarjeta «Confirmar el Pedido N.º 7»: 2 cafés $37.000, 1 aceite $12.900, domicilio $6.000, total $55.900, EFECTIVO y la dirección. En MySQL el pedido seguía en BORRADOR y sin método de pago (`evidencias/chat-12-tarjeta-de-aprobacion.jpg`). |
+| H | Clic en **Aprobar** | `confirmarPedido`, ejecutada por el host | «Pedido N.º 7 confirmado. Total: $55.900, pago en EFECTIVO contra entrega. Entrega estimada: 2026-11-15 12:20 a. m.» Stock: café 26→24, aceite 35→34. No hizo falta otra llamada al modelo (`chat-13-aprobado-y-confirmado.jpg`). |
+| I | «Pensándolo bien, cancela ese pedido» | Ninguna ejecutada: `cancelarPedido` quedó pendiente | Tarjeta «Cancelar el Pedido N.º 7». Es la misma frase con la que el modelo canceló el pedido 6 sin preguntar (turno F); ahora no puede hacerlo por su cuenta (`chat-14-cancelar-pide-aprobacion.jpg`). |
+| J | Clic en **Rechazar** | — | «Listo, no cancelé el Pedido N.º 7. ¿Quieres cambiar algo?» El pedido sigue CONFIRMADO y el stock no cambia (`chat-15-cancelacion-rechazada.jpg`). |
+
+Estado en MySQL al terminar (`evidencias/chat-aprobacion-mysql.txt`):
+
+```
+pedido 7 | Ana Gómez | CONFIRMADO | EFECTIVO | subtotal 49.900 | domicilio 6.000 | total 55.900
+         | confirmado 23:20 del 14 nov | entrega estimada 00:20 del 15 nov
+detalle: 2 Café molido 37.000 · 1 Aceite de girasol 12.900
+stock:   Café 26→24 · Aceite 35→34 (sin cambios después del rechazo)
+```
+
 ## Paso 6. Problemas encontrados y cómo se resolvieron
 
 | # | Problema | Causa | Solución |
 |---|---|---|---|
 | 1 | El catálogo aparecía como "LÃ¡cteos", y "limon" no encontraba nada | El cliente `mysql`, sin locale configurado, envió el UTF-8 del script como latin1 | `SET NAMES utf8mb4` en `schema.sql` y `--default-character-set=utf8mb4` en `cargar-base.sh`. |
-| 2 | Fechas como `[2026, 11, 12, 11, 57, …]` | Serialización por defecto de `LocalDateTime` | `PedidoDto` las formatea como `yyyy-MM-dd HH:mm`. |
+| 2 | Fechas como `[2026, 11, 12, 11, 57, …]` | Serialización por defecto de `LocalDateTime` | `PedidoDto` las envía como texto legible (después con a. m./p. m., ver problema 9). |
 | 3 | El chat se quedaba "pensando" indefinidamente | El SDK de Gemini no tiene timeout de lectura por defecto y el servicio a veces no responde (503, alta demanda) | `GeminiConfig`: tiempo máximo por llamada (150 s, que incluye los reintentos) y reintentos del SDK para 408/429/5xx. Spring AI con `retry.max-attempts=1`, porque reintentar el turno completo podría ejecutar dos veces una herramienta; el SDK reintenta una sola llamada al modelo, que es seguro. |
 | 4 | El modelo inventó "pedido 101" | La memoria del chat guarda los textos finales, no los resultados de las herramientas, y la respuesta no mencionaba el número | El prompt exige mencionar siempre «Pedido N.º X» y, si no lo recuerda, volver a llamar `crearPedido` (idempotente, devuelve el carrito abierto). |
 | 5 | Un error de herramienta abortaba el turno ("Failed to parse JSON: Error calling tool…") | Ante un `isError`, el cliente MCP de Spring AI lanza una excepción con texto plano, y el conector de Gemini exige que la respuesta de la herramienta sea JSON | `RegistroHerramientas` devuelve `{"error": "No existe el pedido 101"}`; el modelo lo lee y se corrige. Hay una prueba unitaria que reproduce el caso. |
@@ -254,7 +276,7 @@ stock: Pan 40→39 · Café 29→26 (pedido 4) · Agua 100 (sin cambios)
 | 7 | Incluso con cuota diaria, un turno largo fallaba con 429 | El límite **por minuto** del plan gratuito: un turno con 5 o 6 herramientas encadena el mismo número de llamadas seguidas al modelo | Esperas de reintento de 5, 10, 20 y 30 s (algo más de un minuto, la ventana del límite). El turno se vuelve más lento, pero termina. |
 | 8 | **IDOR**: con `verPedido(3)` el chatbot podía mostrar un pedido sin verificar quién preguntaba. Lo mismo pasaba con `agregarProducto`, `actualizarCantidad` y `confirmarPedido`: con adivinar un id se podía ver o modificar un pedido ajeno | Las herramientas solo recibían el `pedidoId`; únicamente `cancelarPedido` validaba el dueño | Todas reciben el celular, y `PedidoService.pedidoDelCliente` lo compara con el dueño del pedido. 2 pruebas unitarias nuevas y 2 casos IDOR en el script de curl («El pedido 5 no pertenece al teléfono 3001234567»). |
 | 9 | El chatbot dijo «04:09 PM» para una entrega a las 4:09 de la madrugada | El DTO enviaba la hora en 24 h (`2026-11-13 04:09`) y el modelo le agregó "PM" por su cuenta | El servidor envía la hora con a. m./p. m. explícito (`2026-11-13 4:09 a. m.`), armado a mano porque el locale es-CO de Java mete un espacio especial (U+202F). Además, el prompt pide copiar las horas tal como llegan. Verificado en el turno E. |
-| 10 | El chatbot canceló el pedido 6 sin pedir confirmación, aunque el prompt lo exige | Las reglas del prompt son orientaciones, no garantías: el modelo tomó «cancela ese pedido» como consentimiento explícito | **Pendiente, documentado como hallazgo.** El servidor sí hizo cumplir lo crítico (dueño y estado). La solución robusta es que la confirmación la exija el *host* y no el modelo: con `internalToolExecutionEnabled=false`, Spring AI devuelve las llamadas a herramientas a la aplicación, que puede pedir aprobación con un botón antes de ejecutar `confirmarPedido` o `cancelarPedido`. Es el mismo mecanismo que usa Claude Desktop. |
+| 10 | El chatbot canceló el pedido 6 sin pedir confirmación, aunque el prompt lo exige | Las reglas del prompt son orientaciones, no garantías: el modelo tomó «cancela ese pedido» como consentimiento explícito | **Resuelto con aprobación en el *host*.** `AprobacionesPendientes` intercepta las dos herramientas: el modelo solo puede proponerlas, y se ejecutan cuando el cliente pulsa Aprobar en la tarjeta con el resumen real del pedido (Paso 4.2). Verificado en los turnos G a J: la misma frase «cancela ese pedido» ahora muestra la tarjeta, y al rechazarla el pedido 7 sigue confirmado. Se usó un decorador de `ToolCallback` en lugar de `internalToolExecutionEnabled=false` porque conserva el bucle de herramientas de Spring AI y la memoria del chat sin reescribirlos. Es el mismo principio de Claude Desktop, que pide permiso antes de ejecutar una herramienta. |
 
 ## Paso 7. Cómo ejecutarlo
 
@@ -277,6 +299,5 @@ Como el servidor es MCP estándar, también se puede conectar a Claude Desktop c
 - **Autenticación real.** El servidor ya verifica que el celular sea el dueño de cada pedido (problema 8), pero el celular en sí no se verifica: quien conozca el número de otra persona puede suplantarla. En producción haría falta un OTP por SMS u OAuth, y el servidor MCP debería exigir un token (MCP define autorización OAuth 2.1).
 - **Memoria persistente.** La memoria del chat está en RAM (`InMemoryChatMemoryRepository`); se pierde al reiniciar. Spring AI ofrece repositorios JDBC para guardarla en MySQL. El pedido sí persiste en la BD.
 - **Carrito implícito.** Un paso más allá del problema 8 es que las herramientas del carrito no reciban `pedidoId` sino solo el celular, y operen siempre sobre el carrito abierto del cliente. Así desaparece la clase de errores del problema 4.
-- **Aprobación humana de acciones sensibles.** Ver el problema 10: mover la confirmación de `confirmarPedido` y `cancelarPedido` del prompt al host, con un botón "Aprobar" en la interfaz, para que no dependa del criterio del modelo.
 - **Operación del domicilio.** Faltan herramientas internas (no expuestas al chatbot) para pasar los pedidos a EN_CAMINO y ENTREGADO, y para administrar el catálogo.
 - **Cuotas del modelo.** Para uso real hace falta un plan de pago o un modelo local, además de limitar las peticiones por usuario en `ChatController`.

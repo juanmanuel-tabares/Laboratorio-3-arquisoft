@@ -346,7 +346,7 @@ Ambas usan la misma consulta derivada `findByCompletado(Boolean)` con valores op
 
 ## 9. Ejercicio propuesto (supermercado a domicilio)
 
-Resuelto en `ejercicio-supermercado/`; la explicación paso a paso está en `ejercicio-supermercado/EJERCICIO.md`. Se compone de un servidor MCP con 11 herramientas sobre MySQL (catálogo, clientes y pedidos, con reglas de stock, pedido mínimo y domicilio gratis) y de un ChatBot web propio hecho con Spring AI y Gemini que lo consume como cliente MCP. Pruebas: 28 en el servidor y 6 en el chatbot.
+Resuelto en `ejercicio-supermercado/`; la explicación paso a paso está en `ejercicio-supermercado/EJERCICIO.md`. Se compone de un servidor MCP con 11 herramientas sobre MySQL (catálogo, clientes y pedidos, con reglas de stock, pedido mínimo y domicilio gratis) y de un ChatBot web propio hecho con Spring AI y Gemini que lo consume como cliente MCP. Pruebas: 28 en el servidor y 15 en el chatbot.
 
 La demostración por chat cubrió:
 
@@ -354,9 +354,10 @@ La demostración por chat cubrió:
 - un pedido con domicilio gratis confirmado en NEQUI;
 - un pedido confirmado en efectivo con su hora de entrega;
 - la consulta de estado;
-- la creación y cancelación de un pedido.
+- la creación y cancelación de un pedido;
+- la confirmación y la cancelación aprobadas o rechazadas por el cliente con un botón, sin que el modelo pueda ejecutarlas por su cuenta.
 
-Todo quedó verificado en MySQL. Las pruebas destaparon y corrigieron 9 problemas: codificación, fechas, timeouts, número de pedido inventado, errores de herramienta, cuotas, límite por minuto, **IDOR** y a. m./p. m. Queda documentado un décimo hallazgo: la confirmación antes de cancelar depende del modelo y debería exigirla el *host*.
+Todo quedó verificado en MySQL. Las pruebas destaparon y corrigieron 10 problemas: codificación, fechas, timeouts, número de pedido inventado, errores de herramienta, cuotas, límite por minuto, **IDOR**, a. m./p. m. y una cancelación hecha sin pedir confirmación. Este último se resolvió en el *host*: `confirmarPedido` y `cancelarPedido` solo se ejecutan cuando el cliente pulsa «Aprobar» en la interfaz, como pide la sección 14 de la guía (solicitar confirmación antes de operaciones destructivas o de impacto significativo).
 
 ## 10. Estado final
 

@@ -86,6 +86,23 @@
       font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
       background: var(--tool); color: var(--tool-text); padding: 1px 8px; border-radius: 999px;
     }
+    .aprobacion {
+      margin-top: 8px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--brand);
+      background: var(--brand-soft); max-width: 420px;
+    }
+    .aprobacion .titulo { font-weight: 600; margin-bottom: 4px; }
+    .aprobacion ul { margin: 4px 0 8px; padding-left: 18px; font-size: 14px; }
+    .aprobacion .dato { font-size: 14px; }
+    .aprobacion .nota { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .aprobacion .acciones { display: flex; gap: 8px; margin-top: 10px; }
+    .aprobacion button {
+      border-radius: 10px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .aprobacion .aprobar { border: 0; background: var(--brand); color: #fff; }
+    .aprobacion .aprobar:hover { background: var(--brand-strong); }
+    .aprobacion .rechazar { border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    .aprobacion button:disabled { opacity: .5; cursor: default; }
+    .aprobacion .estado { font-size: 13px; font-weight: 600; margin-top: 8px; }
     .escribiendo span {
       display: inline-block; width: 7px; height: 7px; margin: 0 2px; border-radius: 50%;
       background: var(--muted); animation: salto 1.2s infinite ease-in-out;
@@ -208,6 +225,83 @@
     return fila;
   }
 
+  const pesos = n => '$' + Number(n).toLocaleString('es-CO');
+
+  // Tarjeta de aprobación: confirmarPedido y cancelarPedido solo se ejecutan si el cliente pulsa Aprobar.
+  // Todos los datos se insertan con textContent (nunca como HTML).
+  function tarjetaDeAprobacion(fila, a) {
+    const caja = document.createElement('div');
+    caja.className = 'aprobacion';
+    const titulo = document.createElement('div');
+    titulo.className = 'titulo';
+    titulo.textContent = a.titulo;
+    caja.appendChild(titulo);
+    const lista = document.createElement('ul');
+    for (const l of a.lineas || []) {
+      const li = document.createElement('li');
+      li.textContent = l;
+      lista.appendChild(li);
+    }
+    caja.appendChild(lista);
+    const datos = [['Total', pesos(a.total)]];
+    if (a.metodoPago) datos.push(['Pago', a.metodoPago + ' contra entrega']);
+    if (a.direccion) datos.push(['Dirección', a.direccion]);
+    for (const [k, v] of datos) {
+      const d = document.createElement('div');
+      d.className = 'dato';
+      const b = document.createElement('strong');
+      b.textContent = k + ': ';
+      d.append(b, v);
+      caja.appendChild(d);
+    }
+    const acciones = document.createElement('div');
+    acciones.className = 'acciones';
+    const aprobar = document.createElement('button');
+    aprobar.className = 'aprobar';
+    aprobar.type = 'button';
+    aprobar.textContent = 'Aprobar';
+    const rechazar = document.createElement('button');
+    rechazar.className = 'rechazar';
+    rechazar.type = 'button';
+    rechazar.textContent = 'Rechazar';
+    acciones.append(aprobar, rechazar);
+    caja.appendChild(acciones);
+    const nota = document.createElement('div');
+    nota.className = 'nota';
+    nota.textContent = 'Esta acción solo se ejecuta si la apruebas aquí. El asistente no puede aprobarla por ti.';
+    caja.appendChild(nota);
+
+    async function decidir(si) {
+      aprobar.disabled = rechazar.disabled = true;
+      try {
+        const r = await fetch('/api/chat/' + encodeURIComponent(conversacionId) + '/aprobaciones/' + encodeURIComponent(a.id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aprobar: si })
+        });
+        const d = await r.json();
+        const estado = document.createElement('div');
+        estado.className = 'estado';
+        if (!r.ok) {
+          estado.textContent = 'No disponible';
+          caja.appendChild(estado);
+          agregar('bot', d.error || 'Error inesperado', { error: true });
+          return;
+        }
+        estado.textContent = si ? '✓ Aprobado por ti' : '✕ Rechazado por ti';
+        caja.appendChild(estado);
+        agregar('bot', markdown(d.respuesta || ''), { html: true, herramientas: d.herramientas || [] });
+      } catch (e) {
+        aprobar.disabled = rechazar.disabled = false;
+        agregar('bot', e.message || 'No pude conectarme con el asistente.', { error: true });
+      }
+    }
+    aprobar.addEventListener('click', () => decidir(true));
+    rechazar.addEventListener('click', () => decidir(false));
+    fila.appendChild(caja);
+    mensajes.scrollTop = mensajes.scrollHeight;
+  }
+
   function bienvenida() {
     agregar('bot', markdown('¡Hola! Soy el asistente de **Supermercado El Canasto**. Puedo ayudarte a armar un pedido a domicilio, consultar precios o revisar tus pedidos. Para empezar, ¿me compartes tu número de celular?'), { html: true });
   }
@@ -231,10 +325,12 @@
       espera.remove();
       if (!r.ok) {
         // Aun con error se muestran las herramientas que alcanzaron a ejecutarse en el servidor.
-        agregar('bot', datos.error || 'Error inesperado', { error: true, herramientas: datos.herramientas || [] });
+        const filaError = agregar('bot', datos.error || 'Error inesperado', { error: true, herramientas: datos.herramientas || [] });
+        if (datos.aprobacion) tarjetaDeAprobacion(filaError, datos.aprobacion);
         return;
       }
-      agregar('bot', markdown(datos.respuesta || ''), { html: true, herramientas: datos.herramientas || [] });
+      const fila = agregar('bot', markdown(datos.respuesta || ''), { html: true, herramientas: datos.herramientas || [] });
+      if (datos.aprobacion) tarjetaDeAprobacion(fila, datos.aprobacion);
     } catch (e) {
       espera.remove();
       agregar('bot', e.message || 'No pude conectarme con el asistente.', { error: true });

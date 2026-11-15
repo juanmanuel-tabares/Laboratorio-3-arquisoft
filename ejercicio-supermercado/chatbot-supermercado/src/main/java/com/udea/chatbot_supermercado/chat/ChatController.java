@@ -5,12 +5,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.InterruptedIOException;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 @RestController
@@ -21,21 +24,29 @@ public class ChatController {
     private static final int MAX_CARACTERES = 1000;
 
     public record Peticion(String conversacionId, String mensaje) {}
-    public record Respuesta(String conversacionId, String respuesta, List<String> herramientas) {}
-    public record Error(String error, List<String> herramientas) {
+    public record Decision(boolean aprobar) {}
+
+    /** {@code aprobacion} viene cuando el modelo propuso confirmar o cancelar: la interfaz muestra los botones. */
+    public record Respuesta(String conversacionId, String respuesta, List<String> herramientas,
+                            AprobacionesPendientes.Aprobacion aprobacion) {}
+
+    public record Error(String error, List<String> herramientas, AprobacionesPendientes.Aprobacion aprobacion) {
         public Error(String error) {
-            this(error, List.of());
+            this(error, List.of(), null);
         }
     }
 
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final RegistroHerramientas registro;
+    private final AprobacionesPendientes aprobaciones;
 
-    public ChatController(ChatClient chatClient, ChatMemory chatMemory, RegistroHerramientas registro) {
+    public ChatController(ChatClient chatClient, ChatMemory chatMemory, RegistroHerramientas registro,
+                          AprobacionesPendientes aprobaciones) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.registro = registro;
+        this.aprobaciones = aprobaciones;
     }
 
     @PostMapping
@@ -48,6 +59,7 @@ public class ChatController {
             ? UUID.randomUUID().toString() : peticion.conversacionId();
 
         registro.iniciar();
+        aprobaciones.iniciarTurno(conversacionId);
         try {
             String texto = chatClient.prompt()
                 .user(mensaje)
@@ -55,14 +67,39 @@ public class ChatController {
                 .call()
                 .content();
             List<String> herramientas = registro.terminar();
-            log.debug("[{}] herramientas usadas: {}", conversacionId, herramientas);
-            return ResponseEntity.ok(new Respuesta(conversacionId, texto, herramientas));
+            var aprobacion = aprobaciones.terminarTurno().orElse(null);
+            log.debug("[{}] herramientas usadas: {}; acción por aprobar: {}", conversacionId, herramientas, aprobacion);
+            return ResponseEntity.ok(new Respuesta(conversacionId, texto, herramientas, aprobacion));
         } catch (RuntimeException e) {
             List<String> herramientas = registro.terminar();
+            // Si el modelo alcanzó a proponer la acción antes de fallar, los botones se muestran igual.
+            var aprobacion = aprobaciones.terminarTurno().orElse(null);
             log.error("[{}] error al conversar con el modelo (herramientas ya ejecutadas: {})", conversacionId, herramientas, e);
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(new Error(conAccionesEjecutadas(mensajeDeError(e), herramientas), herramientas));
+                .body(new Error(conAccionesEjecutadas(mensajeDeError(e), herramientas), herramientas, aprobacion));
         }
+    }
+
+    /**
+     * El cliente pulsó Aprobar o Rechazar. Aquí, y solo aquí, se ejecuta confirmarPedido o cancelarPedido en el
+     * servidor MCP. El resultado se agrega a la memoria de la conversación para que el modelo lo conozca en el
+     * siguiente turno; no se gasta una llamada al modelo.
+     */
+    @PostMapping("/{conversacionId}/aprobaciones/{accionId}")
+    public ResponseEntity<?> resolver(@PathVariable String conversacionId, @PathVariable String accionId,
+                                      @RequestBody Decision decision) {
+        AprobacionesPendientes.Resultado r;
+        try {
+            r = aprobaciones.resolver(conversacionId, accionId, decision.aprobar());
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(new Error(e.getMessage()));
+        }
+        log.info("[{}] {} {} por el cliente: {}", conversacionId, r.accion(), r.aprobada() ? "aprobada" : "rechazada", r.mensaje());
+        chatMemory.add(conversacionId, List.of(
+            new UserMessage("(El cliente pulsó «" + (r.aprobada() ? "Aprobar" : "Rechazar") + "» en la acción " + r.accion() + ")"),
+            new AssistantMessage(r.mensaje())));
+        return ResponseEntity.ok(new Respuesta(conversacionId, r.mensaje(),
+            r.aprobada() ? List.of(r.accion()) : List.of(), null));
     }
 
     /** Herramientas que modifican datos: si alguna alcanzó a ejecutarse antes del fallo, hay que avisarlo. */
@@ -104,6 +141,7 @@ public class ChatController {
     @DeleteMapping("/{conversacionId}")
     public ResponseEntity<Void> reiniciar(@PathVariable String conversacionId) {
         chatMemory.clear(conversacionId);
+        aprobaciones.descartar(conversacionId);
         return ResponseEntity.noContent().build();
     }
 }

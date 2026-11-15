@@ -1,5 +1,6 @@
 package com.udea.chatbot_supermercado.config;
 
+import com.udea.chatbot_supermercado.chat.AprobacionesPendientes;
 import com.udea.chatbot_supermercado.chat.RegistroHerramientas;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -23,16 +24,18 @@ public class ChatConfig {
     /**
      * ChatClient = modelo (Gemini) + instrucciones del asistente + herramientas MCP + memoria.
      * mcpTools lo crea el starter del cliente MCP a partir del tools/list del servidor del supermercado.
+     * confirmarPedido y cancelarPedido pasan por AprobacionesPendientes: el modelo solo puede proponerlas.
      */
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder,
                                  ToolCallbackProvider mcpTools,
                                  RegistroHerramientas registro,
+                                 AprobacionesPendientes aprobaciones,
                                  ChatMemory chatMemory,
                                  @Value("classpath:prompts/sistema.st") Resource instrucciones) {
         return builder
             .defaultSystem(instrucciones)
-            .defaultToolCallbacks(registro.envolver(mcpTools.getToolCallbacks()))
+            .defaultToolCallbacks(aprobaciones.proteger(registro.envolver(mcpTools.getToolCallbacks())))
             .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
             .build();
     }

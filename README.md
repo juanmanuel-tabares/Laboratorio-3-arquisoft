@@ -77,6 +77,6 @@ cd tarea-mcp && ./mvnw test
 | `tarea-mcp` | 19 |
 | `agente-mcp` | 1 |
 | `ejercicio-supermercado/supermercado-mcp` | 28 |
-| `ejercicio-supermercado/chatbot-supermercado` | 6 |
+| `ejercicio-supermercado/chatbot-supermercado` | 15 |
 
 Las pruebas que cargan el contexto de Spring o usan `@DataJpaTest` necesitan MySQL con la base correspondiente ya creada.
