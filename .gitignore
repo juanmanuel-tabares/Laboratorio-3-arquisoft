@@ -1,0 +1,15 @@
+# Secretos locales (las variables se documentan en .env.example)
+.env
+
+# Compilación, registros e IDE
+target/
+logs/
+*.log
+!evidencias/*.log
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Guía del curso (material del docente, no se redistribuye)
+Guia_Laboratorio_*.pdf

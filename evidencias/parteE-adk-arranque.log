@@ -1,0 +1,5 @@
+2026-11-12T10:25:25.552-05:00  INFO 10055 --- [agente-mcp] [ebServer.main()] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8080 (http)
+2026-11-12T10:25:26.409-05:00  INFO 10055 --- [agente-mcp] [ient-1-Worker-0] i.m.client.LifecycleInitializer          : Server response with Protocol: 2025-06-18, Capabilities: ServerCapabilities[completions=CompletionCapabilities
+Herramientas MCP descubiertas: 9
+2026-11-12T10:25:26.479-05:00  INFO 10055 --- [agente-mcp] [ebServer.main()] com.google.adk.web.CompiledAgentLoader   : CompiledAgentLoader initialized with 1 agents: [TareaAgent]
+2026-11-12T10:25:26.483-05:00  INFO 10055 --- [agente-mcp] [ebServer.main()] c.g.adk.web.controller.AgentController   : AgentController initialized with 1 dynamic agents: [TareaAgent]
